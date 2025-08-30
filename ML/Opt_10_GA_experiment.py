@@ -54,10 +54,10 @@ X_SCALER_PATH = 'x_scaler.joblib'
 Y_SCALER_PATH = 'y_scaler.joblib'
 INITIAL_COORDS_PATH = 'initial_coordinates.txt'
 
-GRASP_OUTPUTS_BASE_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\sugar_box" # <--- 修改为您的路径
+GRASP_OUTPUTS_BASE_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\mug" # <--- 修改为您的路径
 RELATIVE_POSE_FILENAME = "relative_gripper_to_object_pose.txt"
-HIGH_RES_OBJECT_DESKTOP_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\sugar_box" # <--- 修改为您的路径
-HIGH_RES_OBJECT_FILENAME = "sugar_box.ply" # 示例，您会从外部读取
+HIGH_RES_OBJECT_DESKTOP_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\mug" # <--- 修改为您的路径
+HIGH_RES_OBJECT_FILENAME = "mug.ply" # 示例，您会从外部读取
 
 RELATIVE_POSE_FILE_PATH = os.path.join(GRASP_OUTPUTS_BASE_PATH, RELATIVE_POSE_FILENAME)
 HIGH_RES_OBJECT_PLY_PATH = os.path.join(HIGH_RES_OBJECT_DESKTOP_PATH, HIGH_RES_OBJECT_FILENAME)
@@ -67,7 +67,7 @@ tray_radius = 60.0
 tray_height = 1.0
 tray_center = np.array([0.0, 0.0, -tray_height / 2.0]) # 托盘几何中心在世界坐标系中的位置
 finger_width = 10.0
-TARGET_POINT_COUNT_FOR_SIM = 2500
+TARGET_POINT_COUNT_FOR_SIM = 3000
 show_axes = True
 collision_threshold = 1.0
 overlap_threshold = 1e-4
@@ -79,17 +79,20 @@ INITIAL_PRESSURE_EVAL_GRASP = 100.0
 R_BOUNDS = (30, tray_radius * 0.95) # 遗传算法中半径r的搜索边界
 N_FINGER_SLOTS = 9
 OBJECT_SCALE_FACTOR = 820
+# OBJECT_SCALE_FACTOR = 950
 CHARACTERISTIC_LENGTH_FOR_GII = 30
 DOT_PROD_TOLERANCE_LOCAL = 1e-6
 
 # ======================= 新增：手动平移接口 =======================
 # 在这里定义您希望对物体点云施加的额外平移量 (单位: 毫米)
-manual_object_translation_xyz = [10.0, 0.0, 0.0] # sugar_box
+# manual_object_translation_xyz = [10.0, 0.0, 0.0] # sugar_box
+# manual_object_translation_xyz = [-22.0, 0.0, -25.0]
+manual_object_translation_xyz = [5.0, 0.0, 0.0]
 # =================================================================
 
 # ======================= 新增：手动旋转接口 =======================
 # 在这里定义您希望对物体点云施加的额外旋转量 (单位: 度)
-manual_object_rotation_xyz_deg = [0.0, 0.0, 0.0]
+manual_object_rotation_xyz_deg = [-90.0, 0.0, 0.0]
 # =================================================================
 
 
@@ -372,7 +375,7 @@ T_pose_for_tray_display_and_finger_placement_global = None
 tray_pv_global = None
 
 # --- 调试可视化开关 ---
-DEBUG_VISUALIZE_FAILED_GRASPS = False # 设置为 True 以在 GA 失败步骤时进行可视化
+DEBUG_VISUALIZE_FAILED_GRASPS =  False # 设置为 True 以在 GA 失败步骤时进行可视化
 FAILED_GRASP_VIS_COUNT = 0 # 用于给失败可视化窗口编号
 MAX_FAILED_GRASP_VIS = 10 # 最多显示多少个失败的可视化，防止过多窗口
 

@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-# 本脚本根据用户自定义的构型（r值和手指位置）进行单次抓取评估，并生成可视化结果。
-# 该版本基于 Opt_10_BO_experiment.txt 修改，去除了贝叶斯优化部分。
+# 虚拟实验2：利用GraspNet预测的末端位姿与YCB数据集中的物体点云进行构型随机搜索优化并可视化 (基线对比)
 import numpy as np
 import pyvista as pv
 import numpy.linalg as LA
@@ -14,11 +13,13 @@ import time
 import os
 import copy
 import open3d as o3d # 确保 Open3D 已导入
+import random # 用于随机搜索和采样
+import itertools # 导入 itertools 用于生成排列组合
 import vtk # For VTK font constants
 
 # --- 打印版本信息 ---
 try:
-    print(f"手抓评估脚本 (基于 Opt_10_BO_experiment.txt 修改，移除了贝叶斯优化)")
+    print(f"Opt_10_RS_experiment.txt (已将优化算法替换为随机搜索)")
     print(f"Open3D version: {o3d.__version__}")
     print(f"PyVista version: {pv.__version__}")
     print(f"NumPy version: {np.__version__}")
@@ -26,7 +27,7 @@ try:
 except NameError:
     pass
 except Exception as e:
-    print(f"打印库版本时出错: {e}")
+    print(f"Error printing library versions: {e}")
 
 # --- 1. ML 模型定义 ---
 class MLPRegression(nn.Module):
@@ -53,10 +54,10 @@ X_SCALER_PATH = 'x_scaler.joblib'
 Y_SCALER_PATH = 'y_scaler.joblib'
 INITIAL_COORDS_PATH = 'initial_coordinates.txt'
 
-GRASP_OUTPUTS_BASE_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\3D_8" # <--- 修改为您的路径
+GRASP_OUTPUTS_BASE_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\mug" # <--- 修改为您的路径
 RELATIVE_POSE_FILENAME = "relative_gripper_to_object_pose.txt"
-HIGH_RES_OBJECT_DESKTOP_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\3D_8" # <--- 修改为您的路径
-HIGH_RES_OBJECT_FILENAME = "3D_8.ply" # 示例，您会从外部读取
+HIGH_RES_OBJECT_DESKTOP_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\mug" # <--- 修改为您的路径
+HIGH_RES_OBJECT_FILENAME = "mug.ply" # 示例，您会从外部读取
 
 RELATIVE_POSE_FILE_PATH = os.path.join(GRASP_OUTPUTS_BASE_PATH, RELATIVE_POSE_FILENAME)
 HIGH_RES_OBJECT_PLY_PATH = os.path.join(HIGH_RES_OBJECT_DESKTOP_PATH, HIGH_RES_OBJECT_FILENAME)
@@ -65,35 +66,37 @@ HIGH_RES_OBJECT_PLY_PATH = os.path.join(HIGH_RES_OBJECT_DESKTOP_PATH, HIGH_RES_O
 tray_radius = 60.0
 tray_height = 1.0
 tray_center = np.array([0.0, 0.0, -tray_height / 2.0]) # 托盘几何中心在世界坐标系中的位置
-finger_width = 10.5
-TARGET_POINT_COUNT_FOR_SIM = 3500
+finger_width = 10.0
+TARGET_POINT_COUNT_FOR_SIM = 3000
 show_axes = True
 collision_threshold = 1.0
 overlap_threshold = 1e-4
 friction_coefficient = 0.5
 eigenvalue_threshold = 1e-6
-max_pressure = 4000.0
+max_pressure = 40000.0
 PRESSURE_STEP_EVAL_GRASP = 500.0
 INITIAL_PRESSURE_EVAL_GRASP = 100.0
-N_FINGER_SLOTS = 8 # 总共可用手指槽位数
-# OBJECT_SCALE_FACTOR = 1000
-# OBJECT_SCALE_FACTOR = 1450
-OBJECT_SCALE_FACTOR = 950
+R_BOUNDS = (30, tray_radius * 0.95) # 搜索中半径r的边界
+N_FINGER_SLOTS = 9
+OBJECT_SCALE_FACTOR = 820
+# OBJECT_SCALE_FACTOR = 950
 CHARACTERISTIC_LENGTH_FOR_GII = 30
 DOT_PROD_TOLERANCE_LOCAL = 1e-6
 
-# ======================= 手动平移接口 =======================
+# ======================= 新增：手动平移接口 =======================
 # 在这里定义您希望对物体点云施加的额外平移量 (单位: 毫米)
-# 这个平移是在从文件加载并应用初始变换矩阵之后应用的。
-# 格式: [X, Y, Z]
-# manual_object_translation_xyz = [-20.0, -30.0, 28.0] # large_marker
-# manual_object_translation_xyz = [5.0, 0.0, 0.0] # mug
-# manual_object_translation_xyz = [-22.0, 0.0, -25.0]
-# manual_object_translation_xyz = [-45.0, -35.0, -35.0] # 3D_2
-manual_object_translation_xyz = [0.0, 0.0, 0.0]
+# manual_object_translation_xyz = [10.0, 0.0, 0.0] # sugar_box
+# manual_object_translation_xyz = [-22.0, 0.0, -25.0] # tomato_soup_can
+manual_object_translation_xyz = [5.0, 0.0, 0.0] # mug
 # =================================================================
 
-# --- 可视化美化参数 ---
+# ======================= 新增：手动旋转接口 =======================
+# 在这里定义您希望对物体点云施加的额外旋转量 (单位: 度)
+manual_object_rotation_xyz_deg = [-90.0, 0.0, 0.0]
+# =================================================================
+
+
+# --- 新增：可视化美化参数 ---
 finger_color_viz = '#ff7f0e' # Matplotlib Orange
 tray_color_viz = '#BDB7A4'   # Desaturated Tan/Khaki
 object_point_color_viz = '#1f77b4' # Matplotlib Blue
@@ -101,14 +104,19 @@ object_obb_color_viz = '#2ca02c'
 background_color_viz = '#EAEAEA' # Light Gray
 text_color_viz = 'black'
 font_family_viz = 'times'
+# --- end 美化参数 ---
 
-# --- 评估成本定义 ---
 COST_MESH_FAILURE = 9.0
 COST_OVERLAP = 5.0
 COST_INTERSECTION = 4.0
 COST_MAX_PRESSURE_NO_CONTACT = 6.0
 COST_NO_CONTACT_OR_ITER_LIMIT = 3.0
 COST_LOW_GII_OR_FEW_CONTACTS = 2.0
+
+all_valid_finger_combinations_global = list(itertools.permutations(range(N_FINGER_SLOTS), 3))
+num_valid_combinations = len(all_valid_finger_combinations_global)
+print(f"总共有 {N_FINGER_SLOTS} 个手指槽位，生成了 {num_valid_combinations} 种有效的三手指位置组合。")
+
 
 # --- 5. 辅助函数 ---
 def o3d_create_transformation_matrix(R, t):
@@ -119,7 +127,13 @@ def create_rotation_matrix(axis, angle_rad):
     axis /= axis_norm; a = np.cos(angle_rad / 2.0); b, c, d = -axis * np.sin(angle_rad / 2.0)
     aa, bb, cc, dd = a*a, b*b, c*c, d*d; bc, ad, ac, ab, bd, cd = b*c, a*d, a*c, a*b, b*d, c*d
     return np.array([[aa+bb-cc-dd, 2*(bc+ad), 2*(bd-ac)], [2*(bc-ad), aa+cc-bb-dd, 2*(cd+ab)], [2*(bd+ac), 2*(cd-ab), aa+dd-bb-cc]])
-def create_rotation_matrix_z(a): return create_rotation_matrix([0,0,1], a)
+
+# --- 新增：为XYZ轴创建旋转矩阵的辅助函数 ---
+def create_rotation_matrix_x(angle_rad): return create_rotation_matrix([1,0,0], angle_rad)
+def create_rotation_matrix_y(angle_rad): return create_rotation_matrix([0,1,0], angle_rad)
+def create_rotation_matrix_z(angle_rad): return create_rotation_matrix([0,0,1], angle_rad)
+# --- 结束新增辅助函数 ---
+
 def create_transformation_matrix_opt8(r_mat, t_vec):
     matrix=np.identity(4)
     if r_mat is not None: matrix[:3, :3] = r_mat
@@ -162,16 +176,16 @@ def sort_points_spatially(points):
         if remaining_points_array.ndim == 1: remaining_points_array = remaining_points_array[np.newaxis,:]
         if remaining_points_array.shape[0] == 0: break
         try: distances = cdist(last_point,remaining_points_array)[0]
-        except Exception as e_cdist: print(f"cdist计算时出错: {e_cdist}"); break
+        except Exception as e_cdist: print(f"Error during cdist: {e_cdist}"); break
         if distances.size == 0: break
         nearest_neighbor_relative_index = np.argmin(distances); nearest_neighbor_absolute_index = remaining_indices[nearest_neighbor_relative_index]
         sorted_indices.append(nearest_neighbor_absolute_index); current_index = nearest_neighbor_absolute_index
         if nearest_neighbor_absolute_index in remaining_indices: remaining_indices.pop(remaining_indices.index(nearest_neighbor_absolute_index))
-    if len(sorted_indices) != num_points: print(f"警告: 空间排序只处理了 {len(sorted_indices)} / {num_points} 个点。")
+    if len(sorted_indices) != num_points: print(f"Warning: Spatial sort only processed {len(sorted_indices)} of {num_points} points.")
     return points[sorted_indices]
 def get_orthogonal_vectors(normal_vector):
     n = np.asarray(normal_vector).astype(float); norm_n = LA.norm(n)
-    if norm_n < 1e-9: raise ValueError("法向量为零。")
+    if norm_n < 1e-9: raise ValueError("Normal vector zero.")
     n /= norm_n
     if np.abs(n[0]) > 0.9: v_arbitrary = np.array([0., 1., 0.])
     else: v_arbitrary = np.array([1., 0., 0.])
@@ -183,9 +197,9 @@ def get_orthogonal_vectors(normal_vector):
             elif np.abs(n[1]) > 0.9: t1 = np.array([1.,0.,0.])
             else: t1 = np.array([1.,0.,0.])
             norm_t1 = LA.norm(t1)
-            if norm_t1 < 1e-9: raise ValueError("多次尝试后t1向量仍为零。")
+            if norm_t1 < 1e-9: raise ValueError("Fallback t1 is zero after multiple attempts.")
     t1 /= norm_t1; t2_temp = np.cross(n, t1); norm_t2 = LA.norm(t2_temp)
-    if norm_t2 < 1e-9: raise ValueError("无法计算第二个切向量。")
+    if norm_t2 < 1e-9: raise ValueError("Cannot compute tangent 2.")
     t2 = t2_temp / norm_t2; return t1, t2
 def load_prediction_components(model_path,x_scaler_path,y_scaler_path,input_dim,output_dim,h1,h2,h3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu"); print(f"ML使用设备: {device}")
@@ -267,7 +281,7 @@ def get_rotation_matrix_between_vectors(vec1, vec2):
     vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     r_mat = np.identity(3) + vx + vx @ vx * ((1 - c) / (s ** 2)); return r_mat
 
-# --- 可视化函数 ---
+# --- 新增/修改：可视化函数 ---
 def setup_publication_plotter(title, window_size=[1000, 800], off_screen_default=False):
     """
     创建一个具有统一出版级风格的 PyVista 绘图器。
@@ -282,8 +296,11 @@ def setup_publication_plotter(title, window_size=[1000, 800], off_screen_default
     plotter = pv.Plotter(window_size=window_size, theme=plotter_theme, title=title, off_screen=off_screen_default)
     plotter.enable_anti_aliasing('msaa', multi_samples=8)
     plotter.enable_parallel_projection()
+
+    # 设置光照
     plotter.remove_all_lights()
     plotter.enable_lightkit()
+
     return plotter
 
 def visualize_poses_with_open3d(tray_geometry_transform_mm, tray_axes_transform_mm, bottle_axes_transform_mm, bottle_points_world_mm, bottle_colors_rgb_float, bottle_obb_world, tray_radius_mm, tray_height_mm, window_title="Open3D Relative Pose Visualization"):
@@ -357,15 +374,58 @@ T1_translate_global, T2_rotate_global = None, None
 T_pose_for_tray_display_and_finger_placement_global = None
 tray_pv_global = None
 
-def evaluate_grasp(r, chosen_indices):
+# --- 调试可视化开关 ---
+DEBUG_VISUALIZE_FAILED_GRASPS = False # 设置为 True 以在随机搜索失败步骤时进行可视化
+FAILED_GRASP_VIS_COUNT = 0 # 用于给失败可视化窗口编号
+MAX_FAILED_GRASP_VIS = 10 # 最多显示多少个失败的可视化，防止过多窗口
+
+def visualize_failed_rs_step(r_param, chosen_indices_param, pressures_param, finger_meshes_param, failure_reason_str):
     """
-    评估单个抓取配置。
-    参数:
-        r (float): 手指放置的半径。
-        chosen_indices (list of int): 三个手指的位置索引，例如 [0, 1, 2]。
-    返回:
-        tuple: (cost, final_pressures, final_meshes, final_contacts)
+    使用美化参数来可视化随机搜索失败的步骤。
     """
+    global DEBUG_VISUALIZE_FAILED_GRASPS, FAILED_GRASP_VIS_COUNT, MAX_FAILED_GRASP_VIS
+    global object_mesh_global_static, tray_pv_global, pv_obb_object_mesh_global, show_axes
+
+    if not DEBUG_VISUALIZE_FAILED_GRASPS or FAILED_GRASP_VIS_COUNT >= MAX_FAILED_GRASP_VIS:
+        if FAILED_GRASP_VIS_COUNT == MAX_FAILED_GRASP_VIS and DEBUG_VISUALIZE_FAILED_GRASPS:
+            print("已达到最大失败可视化次数，后续失败将不再显示。")
+            FAILED_GRASP_VIS_COUNT +=1
+        return
+
+    FAILED_GRASP_VIS_COUNT += 1
+
+    plotter_title = f"随机搜索失败调试 #{FAILED_GRASP_VIS_COUNT}: {failure_reason_str}"
+    plotter_debug = setup_publication_plotter(plotter_title, window_size=[900, 700])
+
+    if tray_pv_global:
+        plotter_debug.add_mesh(tray_pv_global, color=tray_color_viz, opacity=0.7, name='tray_debug')
+    if object_mesh_global_static:
+        if 'colors' in object_mesh_global_static.point_data and object_mesh_global_static.point_data['colors'] is not None:
+            plotter_debug.add_mesh(object_mesh_global_static, scalars='colors', rgb=True, style='points', point_size=3.5, render_points_as_spheres=True, name='obj_debug_color')
+        else:
+            plotter_debug.add_mesh(object_mesh_global_static, color=object_point_color_viz, style='points', point_size=3.5, render_points_as_spheres=True, name='obj_debug_default')
+    if show_axes:
+        plotter_debug.add_axes_at_origin(labels_off=True, line_width=2)
+
+    if finger_meshes_param:
+        for i, mesh in enumerate(finger_meshes_param):
+            if mesh:
+                plotter_debug.add_mesh(mesh, color=finger_color_viz, style='surface', opacity=0.9, smooth_shading=True, show_edges=True, edge_color='dimgray', name=f'finger_debug_{i}')
+            else:
+                print(f"  调试可视化警告: 手指 {i} 的网格为 None。")
+
+    params_text = f"r={r_param:.3f}, 位置=({chosen_indices_param[0]},{chosen_indices_param[1]},{chosen_indices_param[2]})\n"
+    pressures_text = f"压力=[{pressures_param[0]:.0f}, {pressures_param[1]:.0f}, {pressures_param[2]:.0f}]\n"
+    reason_text = f"原因: {failure_reason_str}"
+    plotter_debug.add_text(params_text + pressures_text + reason_text, position="upper_left", font=font_family_viz, font_size=10, color=text_color_viz)
+
+    plotter_debug.camera_position = 'xy'
+    plotter_debug.camera.zoom(1.2)
+    print(f"\n(PyVista) 显示随机搜索失败步骤 #{FAILED_GRASP_VIS_COUNT}。原因: {failure_reason_str}。请关闭窗口以继续...")
+    plotter_debug.show(cpos='xy', auto_close=False)
+    plotter_debug.close()
+
+def evaluate_grasp(r, pos_idx1, pos_idx2, pos_idx3):
     global initial_coords_ref_global, model_global, scaler_X_global, scaler_y_global, device_global, \
            object_points_global_static, object_centroid_global_static, num_object_points_global_static, \
            faces_np_global, width_translation_vector_global, T1_translate_global, T2_rotate_global, \
@@ -375,14 +435,18 @@ def evaluate_grasp(r, chosen_indices):
            friction_coefficient, eigenvalue_threshold, \
            COST_MESH_FAILURE, COST_OVERLAP, COST_INTERSECTION, \
            COST_MAX_PRESSURE_NO_CONTACT, COST_NO_CONTACT_OR_ITER_LIMIT, COST_LOW_GII_OR_FEW_CONTACTS, \
-           DOT_PROD_TOLERANCE_LOCAL
+           DOT_PROD_TOLERANCE_LOCAL, DEBUG_VISUALIZE_FAILED_GRASPS
 
+    chosen_indices = [int(pos_idx1), int(pos_idx2), int(pos_idx3)]
     current_call_params_str = f"r={r:.3f}, 位置=({chosen_indices[0]},{chosen_indices[1]},{chosen_indices[2]})"
-    print(f"--- 开始评估: {current_call_params_str} ---")
+
+    return_pressures = np.full(3, INITIAL_PRESSURE_EVAL_GRASP, dtype=float)
+    return_meshes = [None] * 3
+    return_contacts = None
 
     cost_to_return = 20.0
     gii_value_to_print = "N/A"
-    failure_reason = "未知原因"
+    failure_reason_for_vis = ""
     deformed_finger_meshes_at_contact = [None] * 3
 
     try:
@@ -396,8 +460,10 @@ def evaluate_grasp(r, chosen_indices):
             current_pressure_iter += 1
             if current_pressure_iter > max_pressure_iterations:
                 cost_to_return = COST_NO_CONTACT_OR_ITER_LIMIT
-                failure_reason = "达到最大迭代次数仍未建立所有接触"
-                print(f"  评估失败: {failure_reason}")
+                failure_reason_for_vis = "迭代超限"
+                print(f"  随机搜索评估: {current_call_params_str} ({failure_reason_for_vis}) -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print}")
+                if DEBUG_VISUALIZE_FAILED_GRASPS:
+                    visualize_failed_rs_step(r, chosen_indices, current_pressures, deformed_finger_meshes_at_contact, failure_reason_for_vis)
                 return (cost_to_return, current_pressures, deformed_finger_meshes_at_contact, None)
 
             pressure_changed_this_step = False
@@ -425,10 +491,10 @@ def evaluate_grasp(r, chosen_indices):
 
                 current_finger_actual_pos_index = chosen_indices[i]
                 current_angle_deg = current_finger_actual_pos_index * (360.0 / N_FINGER_SLOTS)
-                angle_rad = np.radians(current_angle_deg)
-                rot_angle_z_placing = angle_rad + np.pi / 2.0
+                angle_rad_rs = np.radians(current_angle_deg)
+                rot_angle_z_placing = angle_rad_rs + np.pi / 2.0
                 rot_z_placing = create_rotation_matrix_z(rot_angle_z_placing)
-                target_pos_on_circle = np.array([ r * np.cos(angle_rad), r * np.sin(angle_rad), 0.0 ])
+                target_pos_on_circle = np.array([ r * np.cos(angle_rad_rs), r * np.sin(angle_rad_rs), 0.0 ])
                 T3_place = create_transformation_matrix_opt8(rot_z_placing, target_pos_on_circle)
                 T_transform_finger_relative_to_tray_origin = T3_place @ T2_rotate_global @ T1_translate_global
                 if T_pose_for_tray_display_and_finger_placement_global is None: mesh_generation_successful_this_iter = False; break
@@ -445,8 +511,10 @@ def evaluate_grasp(r, chosen_indices):
 
             if not mesh_generation_successful_this_iter:
                 cost_to_return = COST_MESH_FAILURE
-                failure_reason = "手指网格生成失败"
-                print(f"  评估失败: {failure_reason}")
+                failure_reason_for_vis = "网格生成失败"
+                print(f"  随机搜索评估: {current_call_params_str} ({failure_reason_for_vis}) -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print}")
+                if DEBUG_VISUALIZE_FAILED_GRASPS:
+                     visualize_failed_rs_step(r, chosen_indices, current_pressures, deformed_finger_meshes_at_contact, failure_reason_for_vis)
                 return (cost_to_return, current_pressures, deformed_finger_meshes_at_contact, None)
 
             for i_mesh_update in range(3):
@@ -486,8 +554,10 @@ def evaluate_grasp(r, chosen_indices):
                                     finger_dot_products_this_iter[winning_finger_for_obj_pt].append(dot_prod)
                 if has_overlap_this_iter:
                     cost_to_return = COST_OVERLAP
-                    failure_reason = "手指与物体发生重叠"
-                    print(f"  评估失败: {failure_reason}")
+                    failure_reason_for_vis = "重叠"
+                    print(f"  随机搜索评估: {current_call_params_str} ({failure_reason_for_vis}) -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print}")
+                    if DEBUG_VISUALIZE_FAILED_GRASPS:
+                        visualize_failed_rs_step(r, chosen_indices, current_pressures, current_step_finger_meshes, failure_reason_for_vis)
                     return (cost_to_return, current_pressures, current_step_finger_meshes, None)
 
             finger_intersects_this_iter = [False] * 3
@@ -499,8 +569,10 @@ def evaluate_grasp(r, chosen_indices):
                         if has_pos_dp and has_neg_dp: finger_intersects_this_iter[i] = True
             if any(finger_intersects_this_iter):
                 cost_to_return = COST_INTERSECTION
-                failure_reason = "手指与物体发生穿透"
-                print(f"  评估失败: {failure_reason}")
+                failure_reason_for_vis = "穿透"
+                print(f"  随机搜索评估: {current_call_params_str} ({failure_reason_for_vis}) -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print}")
+                if DEBUG_VISUALIZE_FAILED_GRASPS:
+                    visualize_failed_rs_step(r, chosen_indices, current_pressures, current_step_finger_meshes, failure_reason_for_vis)
                 return (cost_to_return, current_pressures, current_step_finger_meshes, None)
 
             all_fingers_established_this_iter_round = True
@@ -544,82 +616,61 @@ def evaluate_grasp(r, chosen_indices):
                     if gii is not None and gii > 1e-9:
                         cost_to_return = -gii
                         gii_value_to_print = gii
-                        print(f"  评估成功: 成本={cost_to_return:.4f}, GII={gii_value_to_print:.4f}")
+                        print(f"  随机搜索评估: {current_call_params_str} -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print:.4f}")
                         return (cost_to_return, return_pressures, return_meshes, return_contacts)
                     else:
                         cost_to_return = COST_LOW_GII_OR_FEW_CONTACTS
                         gii_value_to_print = gii if gii is not None else "计算失败"
-                        failure_reason = f"GII值过低或计算失败 ({gii_value_to_print if isinstance(gii_value_to_print, str) else f'{gii_value_to_print:.4f}'})"
-                        print(f"  评估失败: {failure_reason}")
+                        failure_reason_for_vis = f"低GII ({gii_value_to_print if isinstance(gii_value_to_print, str) else gii_value_to_print:.4f})"
+                        print(f"  随机搜索评估: {current_call_params_str} ({failure_reason_for_vis}) -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print if isinstance(gii_value_to_print, str) else gii_value_to_print:.4f}")
+                        if DEBUG_VISUALIZE_FAILED_GRASPS:
+                             visualize_failed_rs_step(r, chosen_indices, return_pressures, return_meshes, failure_reason_for_vis)
                         return (cost_to_return, return_pressures, return_meshes, return_contacts)
                 else:
                     cost_to_return = COST_LOW_GII_OR_FEW_CONTACTS
-                    failure_reason = "建立的接触点不足以计算GII"
-                    print(f"  评估失败: {failure_reason}")
+                    failure_reason_for_vis = "接触点不足 GII"
+                    print(f"  随机搜索评估: {current_call_params_str} ({failure_reason_for_vis}) -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print}")
+                    if DEBUG_VISUALIZE_FAILED_GRASPS:
+                        visualize_failed_rs_step(r, chosen_indices, return_pressures, return_meshes, failure_reason_for_vis)
                     return (cost_to_return, return_pressures, return_meshes, return_contacts)
 
             for i in range(3):
                 if not finger_contact_established[i] and current_pressures[i] >= max_pressure:
                     cost_to_return = COST_MAX_PRESSURE_NO_CONTACT
-                    failure_reason = f"手指 {i} 达到最大压力仍未建立接触"
-                    print(f"  评估失败: {failure_reason}")
+                    failure_reason_for_vis = f"手指 {i} 最大压力无接触"
+                    print(f"  随机搜索评估: {current_call_params_str} ({failure_reason_for_vis}) -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print}")
+                    if DEBUG_VISUALIZE_FAILED_GRASPS:
+                        visualize_failed_rs_step(r, chosen_indices, current_pressures, deformed_finger_meshes_at_contact, failure_reason_for_vis)
                     return (cost_to_return, current_pressures, deformed_finger_meshes_at_contact, None)
 
             if not pressure_changed_this_step and not all(finger_contact_established):
                 cost_to_return = COST_MAX_PRESSURE_NO_CONTACT
-                failure_reason = "压力不再增加但仍未建立所有接触"
-                print(f"  评估失败: {failure_reason}")
+                failure_reason_for_vis = "停滞无接触"
+                print(f"  随机搜索评估: {current_call_params_str} ({failure_reason_for_vis}) -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print}")
+                if DEBUG_VISUALIZE_FAILED_GRASPS:
+                    visualize_failed_rs_step(r, chosen_indices, current_pressures, deformed_finger_meshes_at_contact, failure_reason_for_vis)
                 return (cost_to_return, current_pressures, deformed_finger_meshes_at_contact, None)
 
     except Exception as e_eval_grasp:
         print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        print(f"错误: 在 evaluate_grasp 函数中发生异常: {e_eval_grasp}")
+        print(f"DEBUG_RS: EXCEPTION in evaluate_grasp for {current_call_params_str}: {e_eval_grasp}")
         traceback.print_exc()
         print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         cost_to_return = 20.0
+        failure_reason_for_vis = "evaluate_grasp内部异常"
         current_pressures_fallback = current_pressures if 'current_pressures' in locals() else np.full(3, INITIAL_PRESSURE_EVAL_GRASP, dtype=float)
-        return (cost_to_return, current_pressures_fallback, deformed_finger_meshes_at_contact, None)
+        deformed_meshes_fallback = deformed_finger_meshes_at_contact
+
+        print(f"  随机搜索评估: {current_call_params_str} ({failure_reason_for_vis}) -> 成本: {cost_to_return:.4f}, GII: {gii_value_to_print}")
+        if DEBUG_VISUALIZE_FAILED_GRASPS:
+             visualize_failed_rs_step(r, chosen_indices, current_pressures_fallback,
+                                     deformed_meshes_fallback,
+                                     failure_reason_for_vis)
+        return (cost_to_return, None, None, None)
 
 
 # --- 主脚本 ---
 if __name__ == '__main__':
-    # =================================================================================
-    # ==================== 用户自定义抓取配置参数 ===========================
-    #
-    # 在这里修改 `r` 值和三个手指的位置索引 `finger_indices`
-    # `r` (float): 手指放置的半径 (mm)。建议值在 25.0 到 57.0 之间。
-    # `finger_indices` (list of 3 ints): 三个手指的位置索引。
-    #      - 索引必须是 0 到 (N_FINGER_SLOTS - 1) 之间的整数（默认为 0 到 8）。
-    #      - 三个索引必须是唯一的，不能重复。
-    #
-    # 示例:
-    # user_r = 45.0
-    # user_finger_indices = [0, 3, 6] # 将手指放在 0, 3, 6 的位置
-    #
-    # user_r = 30.0
-    # user_finger_indices = [1, 4, 7] # 将手指放在 1, 4, 7 的位置
-    #
-    # =================================================================================
-    user_r = 37.5
-    user_finger_indices = [1, 5, 2]
-    # =================================================================================
-    # =================================================================================
-
-    print("\n" + "="*60)
-    print(" " * 15 + "开始单次抓取配置评估")
-    print("="*60)
-    print(f"用户配置: r = {user_r}, 手指位置 = {user_finger_indices}")
-
-    # --- 参数校验 ---
-    if not (isinstance(user_r, (int, float)) and 0.0 <= user_r <= tray_radius):
-        sys.exit(f"错误: r值 ({user_r}) 无效。请确保它是一个介于 25.0 和 {tray_radius} 之间的数字。")
-    if not (isinstance(user_finger_indices, list) and len(user_finger_indices) == 3 and
-            all(isinstance(i, int) for i in user_finger_indices) and
-            len(set(user_finger_indices)) == 3 and
-            all(0 <= i < N_FINGER_SLOTS for i in user_finger_indices)):
-        sys.exit(f"错误: 手指位置索引 {user_finger_indices} 无效。请提供一个包含三个从 0 到 {N_FINGER_SLOTS-1} 的唯一整数的列表。")
-
-
     # --- A. 加载GraspNet位姿 (物体相对于夹爪) ---
     T_gn_gripper_TO_gn_object_meters = load_transformation_matrix_from_txt(RELATIVE_POSE_FILE_PATH)
     if T_gn_gripper_TO_gn_object_meters is None: sys.exit("错误：未能加载物体相对于GraspNet夹爪的位姿。")
@@ -696,6 +747,44 @@ if __name__ == '__main__':
         print(f"在初始位姿变换后，对物体点云应用额外平移: {manual_translation_vector} mm")
         object_points_transformed_full_mm += manual_translation_vector
         print(f"手动平移应用完毕。")
+    # --- 手动平移应用结束 ---
+    
+    # ======================= 新增：应用手动旋转 =======================
+    manual_rotation_deg = np.array(manual_object_rotation_xyz_deg)
+    if manual_rotation_deg.any():
+        print(f"\n--- 应用手动旋转 ---")
+        print(f"将对物体点云应用额外旋转 (度): {manual_rotation_deg}")
+        
+        # 1. 计算当前点云的质心作为旋转中心
+        if object_points_transformed_full_mm.shape[0] > 0:
+            rotation_center = np.mean(object_points_transformed_full_mm, axis=0)
+            print(f"旋转中心 (质心): {rotation_center.round(3)}")
+
+            # 2. 创建旋转矩阵 (角度转弧度)
+            angle_x_rad = np.radians(manual_rotation_deg[0])
+            angle_y_rad = np.radians(manual_rotation_deg[1])
+            angle_z_rad = np.radians(manual_rotation_deg[2])
+
+            Rx = create_rotation_matrix_x(angle_x_rad)
+            Ry = create_rotation_matrix_y(angle_y_rad)
+            Rz = create_rotation_matrix_z(angle_z_rad)
+
+            # 组合旋转矩阵 (应用顺序: Z -> Y -> X)
+            R_combined = Rz @ Ry @ Rx
+            
+            # 3. 执行围绕质心的旋转
+            # 3.1. 将点云平移,使质心位于原点
+            points_translated_to_origin = object_points_transformed_full_mm - rotation_center
+            # 3.2. 应用旋转
+            points_rotated = points_translated_to_origin @ R_combined.T
+            # 3.3. 将点云平移回原来的位置
+            object_points_transformed_full_mm = points_rotated + rotation_center
+            
+            print("手动旋转应用完毕。")
+        else:
+            print("警告：点云为空，无法应用手动旋转。")
+    # ======================= 手动旋转应用结束 =======================
+
 
     # --- F. 点云抽稀和颜色处理 ---
     final_sampled_points_mm = None; sampled_colors_uint8_pv = None; sampled_colors_float_o3d = None
@@ -762,82 +851,131 @@ if __name__ == '__main__':
     tray_pv_canonical = pv.Cylinder(center=(0,0,0), radius=tray_radius, height=tray_height, direction=(0,0,1), resolution=100)
     tray_pv_global = tray_pv_canonical.transform(T_actual_tray_geometry_world, inplace=False)
 
-    # --- H. 使用用户定义的参数进行单次评估 ---
-    final_cost_viz, final_pressures_viz, final_meshes_viz, final_contacts_viz = evaluate_grasp(
-        r=user_r,
-        chosen_indices=user_finger_indices
-    )
+    # --- H. 随机搜索 ---
+    N_RANDOM_SEARCH_CALLS = 20
+
+    print(f"\n开始随机搜索 (Random Search) 优化")
+    print(f"总搜索次数: {N_RANDOM_SEARCH_CALLS}")
+
+    if DEBUG_VISUALIZE_FAILED_GRASPS:
+        print(f"失败步骤可视化已启用。最多显示 {MAX_FAILED_GRASP_VIS} 次。")
     
-    final_gii_eval = -final_cost_viz if final_cost_viz < -1e-9 else 0.
+    best_params_overall = None
+    best_cost_overall = float('inf')
 
-    print("\n" + "="*60)
-    print(" " * 22 + "评估与可视化")
-    print("="*60)
-    
-    print("\n评估结果:")
-    print(f"  - r值: {user_r:.4f}")
-    print(f"  - 手指位置: {user_finger_indices}")
-    print(f"  - 最终成本: {final_cost_viz:.4f}")
-    if final_gii_eval > 0:
-        print(f"  - GII (力闭合指数): {final_gii_eval:.4f}")
-    else:
-        print("  - GII: 无效或为零。")
-    if final_pressures_viz is not None:
-         print(f"  - 最终手指压力: [{final_pressures_viz[0]:.0f}, {final_pressures_viz[1]:.0f}, {final_pressures_viz[2]:.0f}] kPa")
-    else:
-        print("  - 最终手指压力: 未知")
+    for i in range(N_RANDOM_SEARCH_CALLS):
+        print(f"\n--- 随机搜索迭代 {i + 1}/{N_RANDOM_SEARCH_CALLS} ---")
 
+        # 生成随机参数
+        r_rand = random.uniform(R_BOUNDS[0], R_BOUNDS[1])
+        combo_idx_rand = random.randint(0, num_valid_combinations - 1)
+        
+        current_params = [r_rand, combo_idx_rand]
+        pos_indices_rand = all_valid_finger_combinations_global[combo_idx_rand]
 
-    # --- I. 可视化评估结果 ---
-    if final_meshes_viz and len(final_meshes_viz) == 3 and all(m is not None for m in final_meshes_viz):
-        print("\n正在生成最终可视化结果...")
-
-        pressures_display_str = "N/A"
-        if final_pressures_viz is not None and hasattr(final_pressures_viz, 'size') and final_pressures_viz.size == 3:
-            pressures_display_str = f"[{final_pressures_viz[0]:.0f}, {final_pressures_viz[1]:.0f}, {final_pressures_viz[2]:.0f}]"
-
-        state_disp=f"Cost={final_cost_viz:.3f}"; gii_disp=f"GII={final_gii_eval:.3f}" if final_gii_eval>0 else "GII:N/A"
-
-        # --- PyVista 可视化 ---
-        plotter_final_pv = setup_publication_plotter("PyVista - 抓取评估结果", off_screen_default=False)
-        plotter_final_pv.add_mesh(tray_pv_global, color=pv.Color(tray_color_viz, opacity=200), smooth_shading=True, name='tray_final_pv')
-
-        if object_mesh_global_static:
-            if 'colors' in object_mesh_global_static.point_data and object_mesh_global_static.point_data['colors'] is not None:
-                plotter_final_pv.add_mesh(object_mesh_global_static, scalars='colors', rgba=True, style='points', point_size=3.5, render_points_as_spheres=True, name='obj_final_pv')
-            else:
-                plotter_final_pv.add_mesh(object_mesh_global_static, color=object_point_color_viz, style='points', point_size=3.5, render_points_as_spheres=True, name='obj_final_pv')
-
-        if show_axes:
-            plotter_final_pv.add_axes_at_origin(labels_off=True, line_width=1.5)
-
-        for i, m in enumerate(final_meshes_viz):
-            if m:
-                plotter_final_pv.add_mesh(m, color=finger_color_viz, style='surface', opacity=0.95, smooth_shading=True, show_edges=True, edge_color='dimgray', line_width=0.5, name=f'finger_final_{i}')
-
-        params_txt=f"r={user_r:.2f}, P={pressures_display_str}, indices=({user_finger_indices[0]},{user_finger_indices[1]},{user_finger_indices[2]})"
-        plotter_final_pv.add_text(f"Config: {params_txt}\n{state_disp}\n{gii_disp}", position="upper_left", font=font_family_viz, font_size=10, color=text_color_viz)
-
-        plotter_final_pv.camera_position='xy'
-        plotter_final_pv.camera.zoom(1.2)
-        print("\n(PyVista) 显示抓取配置。请关闭窗口以继续。")
-        plotter_final_pv.show(cpos='xy', auto_close=False)
-        plotter_final_pv.close()
-
-        # --- Open3D 可视化 ---
-        visualize_poses_with_open3d(
-            tray_geometry_transform_mm=T_actual_tray_geometry_world,
-            tray_axes_transform_mm=T_tray_axes_vis_world,
-            bottle_axes_transform_mm=T_object_axes_vis_world,
-            bottle_points_world_mm=object_points_global_static,
-            bottle_colors_rgb_float=sampled_colors_float_o3d,
-            bottle_obb_world=world_obb_object_global,
-            tray_radius_mm=tray_radius,
-            tray_height_mm=tray_height,
-            window_title="Open3D - 相对位姿"
+        # 评估参数
+        cost, _, _, _ = evaluate_grasp(
+            r=current_params[0],
+            pos_idx1=pos_indices_rand[0],
+            pos_idx2=pos_indices_rand[1],
+            pos_idx3=pos_indices_rand[2]
         )
-    else:
-        print("\n评估失败或未能生成有效的手指网格，无法进行最终可视化。")
-        if final_cost_viz is not None : print(f"  (评估返回的成本为: {final_cost_viz:.3f})")
+        
+        # 更新最优解
+        if cost < best_cost_overall:
+            best_cost_overall = cost
+            best_params_overall = current_params[:] # 存储副本
+            print(f"  新最优解! 成本: {best_cost_overall:.4f}, 参数: r={best_params_overall[0]:.3f}, combo_idx={int(best_params_overall[1])}")
 
+    print("\n随机搜索结束。")
+    # --- 随机搜索结束 ---
+
+
+    # --- I. 处理和可视化优化结果 ---
+    if best_params_overall:
+        best_p_list_rs = best_params_overall
+        best_c_rs = best_cost_overall
+
+        best_r_rs = best_p_list_rs[0]
+        best_combo_idx_rs = int(best_p_list_rs[1])
+        best_pos_indices_rs = all_valid_finger_combinations_global[best_combo_idx_rs]
+
+        print("\n使用最优参数重新评估最终状态以获取可视化数据...")
+        original_debug_vis_state = DEBUG_VISUALIZE_FAILED_GRASPS
+        DEBUG_VISUALIZE_FAILED_GRASPS = False
+        final_cost_viz, final_pressures_viz, final_meshes_viz, final_contacts_viz = evaluate_grasp(
+            r=best_r_rs,
+            pos_idx1=best_pos_indices_rs[0],
+            pos_idx2=best_pos_indices_rs[1],
+            pos_idx3=best_pos_indices_rs[2]
+        )
+        DEBUG_VISUALIZE_FAILED_GRASPS = original_debug_vis_state
+
+        best_gii_eval_rs = -final_cost_viz if final_cost_viz < -1e-9 else 0.
+
+        print("\n找到的最优参数:")
+        print(f"  r          = {best_r_rs:.4f}")
+        print(f"  pos_idx1   = {best_pos_indices_rs[0]}")
+        print(f"  pos_idx2   = {best_pos_indices_rs[1]}")
+        print(f"  pos_idx3   = {best_pos_indices_rs[2]}")
+        print(f"  (combo_idx = {best_combo_idx_rs})")
+        print(f"优化找到成本 (Random Search best cost): {best_c_rs:.4f}")
+        print(f"重评成本 (from full eval): {final_cost_viz:.4f}")
+        if best_gii_eval_rs > 0: print(f"重评GII (derived from cost): {best_gii_eval_rs:.4f}")
+        else: print("重评状态无有效GII或GII为0。")
+
+        print("\n使用最优参数生成最终可视化...")
+        if final_meshes_viz and len(final_meshes_viz) == 3 and all(m is not None for m in final_meshes_viz):
+            final_chosen_indices_rs_viz = best_pos_indices_rs
+
+            pressures_display_str = "N/A"
+            if final_pressures_viz is not None and hasattr(final_pressures_viz, 'size') and final_pressures_viz.size == 3:
+                pressures_display_str = f"[{final_pressures_viz[0]:.0f}, {final_pressures_viz[1]:.0f}, {final_pressures_viz[2]:.0f}]"
+
+            state_disp_rs=f"Cost={final_cost_viz:.3f}"; gii_disp_rs=f"GII={best_gii_eval_rs:.3f}" if best_gii_eval_rs>0 else "GII:N/A"
+
+            # 使用新的美化绘图器
+            plotter_final_pv = setup_publication_plotter("PyVista - Optimal Grasp (Random Search)", off_screen_default=False)
+
+            plotter_final_pv.add_mesh(tray_pv_global, color=pv.Color(tray_color_viz, opacity=200), smooth_shading=True, name='tray_final_pv')
+
+            if object_mesh_global_static:
+                if 'colors' in object_mesh_global_static.point_data and object_mesh_global_static.point_data['colors'] is not None:
+                    plotter_final_pv.add_mesh(object_mesh_global_static, scalars='colors', rgba=True, style='points', point_size=3.5, render_points_as_spheres=True, name='obj_final_pv')
+                else:
+                    plotter_final_pv.add_mesh(object_mesh_global_static, color=object_point_color_viz, style='points', point_size=3.5, render_points_as_spheres=True, name='obj_final_pv')
+
+            if show_axes:
+                plotter_final_pv.add_axes_at_origin(labels_off=True, line_width=1.5)
+
+            for i_fv_rs,m_fv_rs in enumerate(final_meshes_viz):
+                if m_fv_rs:
+                    plotter_final_pv.add_mesh(m_fv_rs, color=finger_color_viz, style='surface', opacity=0.95, smooth_shading=True, show_edges=True, edge_color='dimgray', line_width=0.5, name=f'f_final_pv_{i_fv_rs}')
+
+            params_txt_rs=f"r={best_r_rs:.2f}, P={pressures_display_str}, indices=({final_chosen_indices_rs_viz[0]},{final_chosen_indices_rs_viz[1]},{final_chosen_indices_rs_viz[2]})"
+            plotter_final_pv.add_text(f"Optimal (Random Search):{params_txt_rs}\n{state_disp_rs}\n{gii_disp_rs}", position="upper_left", font=font_family_viz, font_size=10, color=text_color_viz)
+
+            plotter_final_pv.camera_position='xy'
+            plotter_final_pv.camera.zoom(1.2)
+            print("\n(PyVista) 显示最优抓取配置。请关闭窗口以继续。")
+            plotter_final_pv.show(cpos='xy', auto_close=False)
+            plotter_final_pv.close()
+
+            visualize_poses_with_open3d(
+                tray_geometry_transform_mm=T_actual_tray_geometry_world,
+                tray_axes_transform_mm=T_tray_axes_vis_world,
+                bottle_axes_transform_mm=T_object_axes_vis_world,
+                bottle_points_world_mm=object_points_global_static,
+                bottle_colors_rgb_float=sampled_colors_float_o3d,
+                bottle_obb_world=world_obb_object_global,
+                tray_radius_mm=tray_radius,
+                tray_height_mm=tray_height,
+                window_title="Open3D - Optimal Poses & Axes (Random Search)"
+            )
+        else:
+            print("未能为最优参数生成手指网格或获取最终压力，无法进行PyVista最终可视化。")
+            if final_cost_viz is not None : print(f"  (重评成本为: {final_cost_viz:.3f})")
+
+    else:
+        print("\n随机搜索未找到任何有效解，无法显示最优。")
     print("\n程序结束。")

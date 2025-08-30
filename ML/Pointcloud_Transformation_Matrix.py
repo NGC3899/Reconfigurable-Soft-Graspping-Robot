@@ -113,9 +113,9 @@ def get_graspnet_object_pose_in_cam_frame(object_pcd_path_graspnet):
 
 
 if __name__ == '__main__':
-    base_path = r"C:\Users\admin\Desktop\mug" 
-    grasp_data_filename = "mug.txt" 
-    object_ply_filename = "mug.ply" 
+    base_path = r"C:\Users\admin\Desktop\Figure\grasp_experiments\3D_13" 
+    grasp_data_filename = "3D_13.txt" 
+    object_ply_filename = "3D_13.ply" 
     
     # Output file for the relative transformation matrix
     relative_pose_output_filename = "relative_gripper_to_object_pose.txt" # Original name

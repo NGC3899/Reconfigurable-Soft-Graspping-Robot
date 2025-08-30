@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # 本脚本根据用户自定义的构型（r值和手指位置）进行单次抓取评估，并生成可视化结果。
 # 该版本基于 Opt_10_BO_experiment.txt 修改，去除了贝叶斯优化部分。
+# 新增功能：添加了对调铁盘XYZ轴方向的接口。
 import numpy as np
 import pyvista as pv
 import numpy.linalg as LA
@@ -18,7 +19,7 @@ import vtk # For VTK font constants
 
 # --- 打印版本信息 ---
 try:
-    print(f"手抓评估脚本 (v1.1, 已添加手动平移与旋转接口)")
+    print(f"手抓评估脚本 (v1.2, 已添加手动平移、旋转及轴对调接口)")
     print(f"Open3D version: {o3d.__version__}")
     print(f"PyVista version: {pv.__version__}")
     print(f"NumPy version: {np.__version__}")
@@ -53,10 +54,10 @@ X_SCALER_PATH = 'x_scaler.joblib'
 Y_SCALER_PATH = 'y_scaler.joblib'
 INITIAL_COORDS_PATH = 'initial_coordinates.txt'
 
-GRASP_OUTPUTS_BASE_PATH = r"C:\Users\admin\Desktop\mug" # <--- 修改为您的路径
+GRASP_OUTPUTS_BASE_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\3D_13" # <--- 修改为您的路径
 RELATIVE_POSE_FILENAME = "relative_gripper_to_object_pose.txt"
-HIGH_RES_OBJECT_DESKTOP_PATH = r"C:\Users\admin\Desktop\mug" # <--- 修改为您的路径
-HIGH_RES_OBJECT_FILENAME = "mug.ply" # 示例，您会从外部读取
+HIGH_RES_OBJECT_DESKTOP_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\3D_13" # <--- 修改为您的路径
+HIGH_RES_OBJECT_FILENAME = "3D_13.ply" # 示例，您会从外部读取
 
 RELATIVE_POSE_FILE_PATH = os.path.join(GRASP_OUTPUTS_BASE_PATH, RELATIVE_POSE_FILENAME)
 HIGH_RES_OBJECT_PLY_PATH = os.path.join(HIGH_RES_OBJECT_DESKTOP_PATH, HIGH_RES_OBJECT_FILENAME)
@@ -75,9 +76,8 @@ eigenvalue_threshold = 1e-6
 max_pressure = 40000.0
 PRESSURE_STEP_EVAL_GRASP = 500.0
 INITIAL_PRESSURE_EVAL_GRASP = 100.0
-N_FINGER_SLOTS = 9 # 总共可用手指槽位数
-# OBJECT_SCALE_FACTOR = 1000
-OBJECT_SCALE_FACTOR = 750
+N_FINGER_SLOTS = 8 # 总共可用手指槽位数
+OBJECT_SCALE_FACTOR = 1150
 CHARACTERISTIC_LENGTH_FOR_GII = 30
 DOT_PROD_TOLERANCE_LOCAL = 1e-6
 
@@ -85,17 +85,31 @@ DOT_PROD_TOLERANCE_LOCAL = 1e-6
 # 在这里定义您希望对物体点云施加的额外平移量 (单位: 毫米)
 # 格式: [X, Y, Z]
 # manual_object_translation_xyz = [-20.0, -30.0, 28.0]
-manual_object_translation_xyz = [5.0, 0.0, 0.0]
+# manual_object_translation_xyz = [-10.0, 20.5, 0.0]
+# manual_object_translation_xyz = [30.0, 2.0, 40.0] # 3D_10
+# manual_object_translation_xyz = [0.0, 20.0, -52.0]
+manual_object_translation_xyz = [55.0, 20.0, -10.0]
 # =================================================================
 
-# ======================= 新增：手动旋转接口 =======================
+# ======================= 手动旋转接口 =======================
 # 在这里定义您希望对物体点云施加的额外旋转量 (单位: 度)
-# 这个旋转是在所有初始平移和变换之后，但在最终用于仿真之前，
-# 围绕物体自身的质心进行的。
 # 格式: [绕X轴旋转度数, 绕Y轴旋转度数, 绕Z轴旋转度数]
-manual_object_rotation_xyz_deg = [-90.0, 0.0, 0.0]
+# manual_object_rotation_xyz_deg = [180.0, 0.0, 0.0]
+# manual_object_rotation_xyz_deg = [0.0, 0.0, 0.0]
+# manual_object_rotation_xyz_deg = [-15.0, 30.0, 8.0]
+# manual_object_rotation_xyz_deg = [60.0, 10.0, -80.0]
+manual_object_rotation_xyz_deg = [-5.0, 210.0, -20.0]
 # =================================================================
 
+# ======================= 新增：铁盘轴方向对调接口 =======================
+# 在这里定义是否需要将铁盘的某个轴的方向对调（乘以-1）。
+# 这将在物体自身质心的坐标系下进行。
+# 设置为 True 来对调相应的轴。
+# 例如, flip_x_axis = True 将会把所有点的 x 坐标翻转。
+flip_x_axis = True  # <--- 已根据您的要求设为 True，以对调正反面
+flip_y_axis = False
+flip_z_axis = False
+# =================================================================
 
 # --- 可视化美化参数 ---
 finger_color_viz = '#ff7f0e' # Matplotlib Orange
@@ -599,11 +613,8 @@ if __name__ == '__main__':
     # 在这里修改 `r` 值和三个手指的位置索引 `finger_indices`
     #
     # =================================================================================
-    # user_r = 15.36
-    # user_finger_indices = [7, 5, 2]
-
-    user_r = 56.16
-    user_finger_indices = [7, 6, 2]
+    user_r = 40.35
+    user_finger_indices = [2, 6, 5]
     # =================================================================================
     # =================================================================================
 
@@ -614,7 +625,7 @@ if __name__ == '__main__':
 
     # --- 参数校验 ---
     if not (isinstance(user_r, (int, float)) and 0.0 <= user_r <= tray_radius):
-        sys.exit(f"错误: r值 ({user_r}) 无效。请确保它是一个介于 25.0 和 {tray_radius} 之间的数字。")
+        sys.exit(f"错误: r值 ({user_r}) 无效。请确保它是一个介于 0.0 和 {tray_radius} 之间的数字。")
     if not (isinstance(user_finger_indices, list) and len(user_finger_indices) == 3 and
             all(isinstance(i, int) for i in user_finger_indices) and
             len(set(user_finger_indices)) == 3 and
@@ -699,7 +710,7 @@ if __name__ == '__main__':
         object_points_transformed_full_mm += manual_translation_vector
         print(f"手动平移应用完毕。")
     
-    # ======================= 应用手动旋转 =======================
+    # --- 应用手动旋转 ---
     manual_rotation_deg = np.array(manual_object_rotation_xyz_deg)
     if manual_rotation_deg.any():
         print(f"\n--- 应用手动旋转 ---")
@@ -730,7 +741,37 @@ if __name__ == '__main__':
             print("手动旋转应用完毕。")
         else:
             print("警告：点云为空，无法应用手动旋转。")
-    # ======================= 手动旋转应用结束 =======================
+
+    # ======================= [新代码块] 应用轴方向对调 =======================
+    scale_vector = np.array([
+        -1.0 if flip_x_axis else 1.0,
+        -1.0 if flip_y_axis else 1.0,
+        -1.0 if flip_z_axis else 1.0,
+    ])
+
+    if not np.all(scale_vector == 1.0):
+        print(f"\n--- 应用轴方向对调 ---")
+        if flip_x_axis: print("  - 对调 X 轴方向")
+        if flip_y_axis: print("  - 对调 Y 轴方向")
+        if flip_z_axis: print("  - 对调 Z 轴方向")
+        
+        # 1. 计算当前点云的质心作为变换中心
+        if object_points_transformed_full_mm.shape[0] > 0:
+            center = np.mean(object_points_transformed_full_mm, axis=0)
+            print(f"  变换中心 (质心): {center.round(3)}")
+            
+            # 2. 将点云移动到原点
+            points_at_origin = object_points_transformed_full_mm - center
+            
+            # 3. 应用缩放（翻转）
+            points_flipped = points_at_origin * scale_vector
+            
+            # 4. 将点云移回原始位置
+            object_points_transformed_full_mm = points_flipped + center
+            print("  轴方向对调应用完毕。")
+        else:
+            print("  警告：点云为空，无法应用轴方向对调。")
+    # ======================= 轴方向对调应用结束 =======================
 
     # --- F. 点云抽稀和颜色处理 ---
     final_sampled_points_mm = None; sampled_colors_uint8_pv = None; sampled_colors_float_o3d = None

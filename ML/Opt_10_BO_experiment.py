@@ -62,10 +62,10 @@ X_SCALER_PATH = 'x_scaler.joblib'
 Y_SCALER_PATH = 'y_scaler.joblib'
 INITIAL_COORDS_PATH = 'initial_coordinates.txt'
 
-GRASP_OUTPUTS_BASE_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\sugar_box" # <--- 修改为您的路径
+GRASP_OUTPUTS_BASE_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\3D_8" # <--- 修改为您的路径
 RELATIVE_POSE_FILENAME = "relative_gripper_to_object_pose.txt"
-HIGH_RES_OBJECT_DESKTOP_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\sugar_box" # <--- 修改为您的路径
-HIGH_RES_OBJECT_FILENAME = "sugar_box.ply" # 示例，您会从外部读取
+HIGH_RES_OBJECT_DESKTOP_PATH = r"C:\Users\admin\Desktop\Figure\grasp_experiments\3D_8" # <--- 修改为您的路径
+HIGH_RES_OBJECT_FILENAME = "3D_8.ply" # 示例，您会从外部读取
 
 RELATIVE_POSE_FILE_PATH = os.path.join(GRASP_OUTPUTS_BASE_PATH, RELATIVE_POSE_FILENAME)
 HIGH_RES_OBJECT_PLY_PATH = os.path.join(HIGH_RES_OBJECT_DESKTOP_PATH, HIGH_RES_OBJECT_FILENAME)
@@ -74,8 +74,8 @@ HIGH_RES_OBJECT_PLY_PATH = os.path.join(HIGH_RES_OBJECT_DESKTOP_PATH, HIGH_RES_O
 tray_radius = 60.0
 tray_height = 1.0
 tray_center = np.array([0.0, 0.0, -tray_height / 2.0]) # 托盘几何中心在世界坐标系中的位置
-finger_width = 10.0
-TARGET_POINT_COUNT_FOR_SIM = 2500
+finger_width = 12.0
+TARGET_POINT_COUNT_FOR_SIM = 3500
 show_axes = True
 collision_threshold = 1.0
 overlap_threshold = 1e-4
@@ -86,9 +86,10 @@ PRESSURE_STEP_EVAL_GRASP = 500.0
 INITIAL_PRESSURE_EVAL_GRASP = 100.0
 N_CALLS_BO = 20
 N_INITIAL_POINTS_BO = 5
-R_BOUNDS = (30, tray_radius * 0.95)
-N_FINGER_SLOTS = 9
-OBJECT_SCALE_FACTOR = 820
+R_BOUNDS = (15, tray_radius * 0.95)
+N_FINGER_SLOTS = 8
+# OBJECT_SCALE_FACTOR = 820
+OBJECT_SCALE_FACTOR = 950
 CHARACTERISTIC_LENGTH_FOR_GII = 30
 DOT_PROD_TOLERANCE_LOCAL = 1e-6
 
@@ -98,10 +99,12 @@ DOT_PROD_TOLERANCE_LOCAL = 1e-6
 # 格式: [X, Y, Z]
 # manual_object_translation_xyz = [18.0, -15.0, -3.0] # bowl
 # manual_object_translation_xyz = [-20.0, -18.0, 18.0] # large_marker
-# manual_object_translation_xyz = [-30.0, 0.0, -20.0] # tomato_soup_can
-manual_object_translation_xyz = [10.0, 0.0, 0.0] # sugar_box
+# manual_object_translation_xyz = [-22.0, 0.0, -25.0] # tomato_soup_can
+# manual_object_translation_xyz = [10.0, 0.0, 0.0] # sugar_box
 # manual_object_translation_xyz = [52.0, -25.0, 0.0] # power_drill
 # manual_object_translation_xyz = [5.0, 0.0, 0.0] # mug
+# manual_object_translation_xyz = [-30.0, -50.0, -35.0]
+manual_object_translation_xyz = [-15.0, 20.0, 0.0]
 # =================================================================
 
 # ======================= 新增：手动旋转接口 =======================
@@ -110,7 +113,7 @@ manual_object_translation_xyz = [10.0, 0.0, 0.0] # sugar_box
 # 围绕物体自身的质心进行的。
 # 格式: [绕X轴旋转度数, 绕Y轴旋转度数, 绕Z轴旋转度数]
 # manual_object_rotation_xyz_deg = [-90.0, 0.0, 0.0] # 示例：绕Z轴旋转0度
-manual_object_rotation_xyz_deg = [0.0, 0.0, 0.0]
+manual_object_rotation_xyz_deg = [180.0, 0.0, 0.0]
 # =================================================================
 
 
@@ -905,7 +908,7 @@ if __name__ == '__main__':
             n_calls=N_CALLS_BO,
             n_initial_points=n_rand_bo_call,
             x0=x0_for_bo,
-            random_state=990,
+            random_state=10,
             noise=0.01
         )
     except Exception as e:
